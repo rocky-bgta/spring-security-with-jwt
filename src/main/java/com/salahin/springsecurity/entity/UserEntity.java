@@ -26,6 +26,18 @@ public class UserEntity {
 	@Column(name="password", nullable = false)
 	@JsonIgnore
 	private String password;
+
+	@Column(name="email")
+	private String email;
+
+	@Column(name="name")
+	private String name;
+
+	@Column(name="provider")
+	private String provider;
+
+	@Column(name="provider_id")
+	private String providerId;
 	
 	@Column(name="email_verified")
 	private boolean emailVerified;

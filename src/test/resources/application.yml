@@ -1,0 +1,38 @@
+jwt:
+  secret: javainuse
+  expirationDateInMs: 800000
+  refreshExpirationDateInMs: 9000000
+
+google:
+  client-id: test-google-client-id
+  client-secret: test-google-client-secret
+
+spring:
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: ${google.client-id}
+            client-secret: ${google.client-secret}
+            scope:
+              - openid
+              - profile
+              - email
+
+  datasource:
+    url: jdbc:h2:mem:spring-security-test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: create-drop
+    properties:
+      hibernate:
+        default_schema: PUBLIC
+        temp:
+          use_jdbc_metadata_defaults: false
+    open-in-view: false

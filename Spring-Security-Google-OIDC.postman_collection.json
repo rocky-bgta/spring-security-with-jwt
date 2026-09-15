@@ -1,0 +1,260 @@
+{
+  "info": {
+    "_postman_id": "e10e3776-7ef0-4cb6-b9f7-0f7b80f731b6",
+    "name": "Spring Security JWT + Google OIDC",
+    "description": "Postman collection for local JWT login and the Google OIDC browser login flow. Google login must be completed in a browser because this Spring Boot app uses Spring Security oauth2Login redirects. After the browser shows the application JWT, paste it into the applicationJwt collection variable.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "applicationJwt",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "localUsername",
+      "value": "tuli",
+      "type": "string"
+    },
+    {
+      "key": "localPassword",
+      "value": "tuli",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Local Username Password Login",
+      "item": [
+        {
+          "name": "Authenticate Local User and Save Application JWT",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('local login returns 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const body = pm.response.json();",
+                  "pm.test('response contains application JWT', function () {",
+                  "  pm.expect(body.token).to.be.a('string').and.not.empty;",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set('applicationJwt', body.token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{localUsername}}\",\n  \"password\": \"{{localPassword}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/authenticate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "authenticate"
+              ]
+            },
+            "description": "Normal username/password login. This returns this application's JWT, not a Google token."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Google OIDC Login",
+      "item": [
+        {
+          "name": "1. Start Google Login - Open This URL in Browser",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/oauth2/authorization/google",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "oauth2",
+                "authorization",
+                "google"
+              ]
+            },
+            "description": "Use this request as a URL reference. Open the resolved URL in your browser: http://localhost:8080/oauth2/authorization/google. Google login is browser-based because Spring Security oauth2Login uses redirects and a temporary session."
+          },
+          "response": []
+        },
+        {
+          "name": "2. Paste Browser Application JWT Here",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Paste the token from the browser JSON response below, then send this request once.",
+                  "const tokenFromBrowser = '';",
+                  "",
+                  "if (tokenFromBrowser) {",
+                  "  pm.collectionVariables.set('applicationJwt', tokenFromBrowser);",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('applicationJwt variable is set', function () {",
+                  "  pm.expect(pm.collectionVariables.get('applicationJwt')).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/secure/info",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "secure",
+                "info"
+              ]
+            },
+            "description": "After Google login succeeds, the browser displays JSON with tokenType=Bearer and token=<application-jwt>. Paste that token into tokenFromBrowser in the Pre-request Script, send this request once, then use the secured requests below."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Secured API With Application JWT",
+      "item": [
+        {
+          "name": "Authenticated Endpoint - /api/secure/info",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('secure endpoint returns 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{applicationJwt}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/secure/info",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "secure",
+                "info"
+              ]
+            },
+            "description": "Works for both local login JWTs and Google-login application JWTs."
+          },
+          "response": []
+        },
+        {
+          "name": "Normal User Endpoint - /normal-user",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{applicationJwt}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/normal-user",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "normal-user"
+              ]
+            },
+            "description": "Requires ROLE_USER or ROLE_ADMIN. Google-created users get ROLE_USER."
+          },
+          "response": []
+        },
+        {
+          "name": "Admin Endpoint - /admin-user",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{applicationJwt}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin-user",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin-user"
+              ]
+            },
+            "description": "Requires ROLE_ADMIN. A newly created Google user should receive 403 Forbidden here."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

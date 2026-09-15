@@ -25,6 +25,7 @@ public class UserServiceImpl implements UserService {
 		userModel.setPassword(bcryptEncoder.encode(userModel.getPassword()));
 		savedUser.setUsername(userModel.getUsername());
 		savedUser.setPassword(userModel.getPassword());
+		savedUser.setProvider("LOCAL");
 		savedUser.setRoleList(userModel.getRoleList());
 		savedUser = userRepository.save(savedUser);
 		userModel.setId(savedUser.getId());

@@ -1,0 +1,59 @@
+jwt:
+  secret: javainuse
+  expirationDateInMs: 800000
+  refreshExpirationDateInMs: 9000000
+
+google:
+  client-id: google-client-id-not-configured
+  client-secret: google-client-secret-not-configured
+
+spring:
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: ${google.client-id}
+            client-secret: ${google.client-secret}
+            scope:
+              - openid
+              - profile
+              - email
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/SpringSecurity
+    username: postgres
+    password: postgres
+
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQL9Dialect
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        default_schema: role_base_auth
+        temp:
+          use_jdbc_metadata_defaults: false
+        format_sql: true
+    show-sql: true
+    open-in-view: false
+
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 2MB
+      max-request-size: 2MB
+      file-size-threshold: 5MB
+
+server:
+  address: localhost
+
+logging:
+  level:
+    org:
+      hibernate:
+        SQL: DEBUG
+        type:
+          descriptor:
+            sql:
+              BasicBinder: TRACE

@@ -1,0 +1,6 @@
+{
+  "google": {
+    "client-id": "your-google-client-id",
+    "client-secret": "your-google-client-secret"
+  }
+}

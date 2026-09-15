@@ -1,8 +1,9 @@
 # spring-security
 
 Spring Boot JWT authentication example using Spring Security, a custom
-`UserDetailsService`, BCrypt password hashing, stateless request authorization,
-and PostgreSQL-backed users and roles.
+`UserDetailsService`, BCrypt password hashing, JWT request authorization,
+Google Login with OAuth 2.0/OpenID Connect, and PostgreSQL-backed users and
+roles.
 
 This README explains how this specific project works. It intentionally uses the
 actual class names, method names, endpoints, and security configuration from this
@@ -18,11 +19,15 @@ The project uses:
 - Spring Boot `2.5.0`
 - Java `11` target
 - Spring Security
+- Spring Security OAuth2 Client for Google Login
 - Spring Data JPA
 - PostgreSQL
 - `io.jsonwebtoken:jjwt:0.9.1`
 - BCrypt password hashing
-- Stateless JWT authentication
+- JWT authentication for secured APIs
+
+The API still uses application JWTs. Google is only another login method that
+proves identity first, then this application creates its normal JWT.
 
 ## JDK Requirement
 
@@ -56,13 +61,15 @@ In this project authentication happens in two places:
 Authorization answers the question: "Is this authenticated user allowed to call
 this endpoint?"
 
-Authorization rules are configured in `SecurityConfiguration.configure(HttpSecurity)`:
+Authorization rules are configured in the `SecurityConfiguration.securityFilterChain(...)`
+bean:
 
 ```java
+.antMatchers("/authenticate", "/register", "/oauth2/**", "/login/oauth2/**").permitAll()
 .antMatchers("/api/secure/**").authenticated()
 .antMatchers("/admin-user").hasRole("ADMIN")
 .antMatchers("/normal-user").hasAnyRole("ADMIN","USER")
-.antMatchers("/authenticate","/register").permitAll().anyRequest().authenticated()
+.anyRequest().authenticated()
 ```
 
 JWT is used after successful login. The client receives a token from
@@ -90,12 +97,12 @@ Important note: this project does not define a modern `SecurityFilterChain`
 `@Bean`. It uses the older Spring Security style:
 
 ```java
-public class SecurityConfiguration extends WebSecurityConfigurerAdapter
+public class SecurityConfiguration
 ```
 
-Spring still creates and executes a security filter chain internally, but the
-configuration is written through `WebSecurityConfigurerAdapter`,
-`configure(HttpSecurity)`, and `antMatchers(...)`.
+Spring creates and executes a security filter chain from the
+`SecurityFilterChain` bean. This project still uses `antMatchers(...)` because
+it is on Spring Boot `2.5.0`.
 
 ## 2. Important Classes
 
@@ -810,16 +817,17 @@ Class:
 `SecurityConfiguration`
 
 Method:
-`configure(HttpSecurity http)`
+`securityFilterChain(HttpSecurity http, ...)`
 
 What happens:
 Spring Security applies authorization rules:
 
 ```java
+.antMatchers("/authenticate", "/register", "/oauth2/**", "/login/oauth2/**").permitAll()
 .antMatchers("/api/secure/**").authenticated()
 .antMatchers("/admin-user").hasRole("ADMIN")
 .antMatchers("/normal-user").hasAnyRole("ADMIN","USER")
-.antMatchers("/authenticate","/register").permitAll().anyRequest().authenticated()
+.anyRequest().authenticated()
 ```
 
 If the authenticated user has the required role, the request reaches the
@@ -881,15 +889,16 @@ This project's controllers do not directly read `SecurityContextHolder`, but
 Spring Security's authorization layer reads it before allowing access to
 `/admin-user`, `/normal-user`, or other authenticated endpoints.
 
-Important stateless detail:
-The security context is rebuilt for each request. Because the app uses:
+Important JWT API detail:
+The security context is rebuilt for each Bearer-token API request. The app uses:
 
 ```java
-SessionCreationPolicy.STATELESS
+SessionCreationPolicy.IF_REQUIRED
 ```
 
-Spring Security does not rely on an HTTP session to remember the user between
-requests.
+OAuth login can create a temporary session for the Google redirect flow. API
+requests still send the application JWT and are rebuilt by
+`CustomJwtAuthenticationFilter`.
 
 ## 6. AuthenticationManager vs AuthenticationProvider
 
@@ -1079,38 +1088,36 @@ Why not compare plaintext passwords manually:
 
 ## 9. SecurityFilterChain
 
-This project does not define:
+This project defines:
 
 ```java
 @Bean
-SecurityFilterChain securityFilterChain(HttpSecurity http)
+SecurityFilterChain securityFilterChain(HttpSecurity http, ...)
 ```
-
-Instead, it uses:
-
-```java
-protected void configure(HttpSecurity http) throws Exception
-```
-
-from `WebSecurityConfigurerAdapter`.
 
 The actual configuration:
 
 ```java
-http.csrf().disable()
+http.authenticationProvider(authenticationProvider)
+    .csrf().disable()
     .formLogin().disable()
     .httpBasic().disable()
     .authorizeRequests()
+    .antMatchers("/authenticate", "/register", "/oauth2/**", "/login/oauth2/**").permitAll()
     .antMatchers("/api/secure/**").authenticated()
     .antMatchers("/admin-user").hasRole("ADMIN")
     .antMatchers("/normal-user").hasAnyRole("ADMIN","USER")
-    .antMatchers("/authenticate","/register").permitAll().anyRequest().authenticated()
+    .anyRequest().authenticated()
+    .and()
+    .oauth2Login()
+    .successHandler(googleOAuth2AuthenticationSuccessHandler)
+    .failureHandler(googleOAuth2AuthenticationFailureHandler)
     .and()
     .exceptionHandling()
     .authenticationEntryPoint(jwtAuthenticationEntryPoint)
     .and()
     .sessionManagement()
-    .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+    .sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED)
     .and()
     .addFilterBefore(customJwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 ```
@@ -1121,8 +1128,8 @@ Meaning:
 Disables CSRF protection.
 
 Why:
-This project is a stateless JWT API, not a session-cookie based browser form
-application. JWT is sent in the `Authorization` header.
+The secured API endpoints use JWTs sent in the `Authorization` header. Google
+OAuth login uses a temporary session during the browser redirect flow.
 
 ### `formLogin().disable()`
 
@@ -1191,13 +1198,14 @@ Why:
 The app should return JSON `401 Unauthorized` responses instead of redirecting
 to a login page.
 
-### `sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)`
+### `sessionManagement().sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED)`
 
 Meaning:
-Spring Security should not create or use HTTP sessions for authentication.
+Spring Security may create an HTTP session when a feature needs it.
 
 Why:
-Every request must prove authentication by sending a JWT.
+Google OAuth2 login needs a temporary session during the browser redirect flow.
+Secured API requests still prove authentication by sending the application JWT.
 
 ### `addFilterBefore(customJwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)`
 
@@ -1957,15 +1965,16 @@ What to observe:
 
 ## 14. Interview Explanation
 
-In my project, Spring Security is configured in `SecurityConfiguration`, which
-extends `WebSecurityConfigurerAdapter`. The application is stateless, disables
-form login, HTTP Basic, and CSRF, and uses JWT for authenticated API requests.
+In my project, Spring Security is configured in `SecurityConfiguration` with a
+`SecurityFilterChain` bean. The application disables form login, HTTP Basic, and
+CSRF, uses JWT for authenticated API requests, and enables OAuth2 login for the
+Google browser redirect flow.
 
 For login, the client calls `POST /authenticate` with username and password.
 `AuthenticationController` creates a `UsernamePasswordAuthenticationToken` and
 passes it to `AuthenticationManager`. The `AuthenticationManager` delegates to
-the implicit `DaoAuthenticationProvider`, which was configured through
-`auth.userDetailsService(customUserDetailsService).passwordEncoder(passwordEncoder())`.
+the `DaoAuthenticationProvider`, which is configured with
+`customUserDetailsService` and `passwordEncoder`.
 That provider calls my `CustomUserDetailsService`, which loads the user from
 `UserRepository` and returns Spring Security's built-in `User` object with the
 encoded password and authorities. Spring Security then uses
@@ -2067,15 +2076,16 @@ Authentication verifies the user identity through username/password or JWT.
 Authorization checks whether the authenticated user has the required role for
 the endpoint.
 
-16. Why is the application stateless?
+16. Why do API requests still need a JWT?
 
-Because `SessionCreationPolicy.STATELESS` tells Spring Security not to store
-authentication in an HTTP session. Every request must send a JWT.
+The secured API flow is JWT-based. Google login needs a temporary session for
+the browser redirect, but `/api/secure/**`, `/normal-user`, and `/admin-user`
+should still be called with `Authorization: Bearer <application-jwt>`.
 
 17. What happens to `SecurityContext` between requests?
 
-It is not reused through a server-side session. The JWT filter rebuilds it for
-each request that sends a valid token.
+For JWT API calls, the JWT filter rebuilds it for each request that sends a
+valid token.
 
 18. What causes `401 Unauthorized`?
 
@@ -2094,24 +2104,22 @@ clients, scopes, ID tokens, discovery metadata, and standard token endpoints.
 
 ## Potential Improvements / Security Issues
 
-These are observations only. The application code was not changed.
+These are observations for future hardening.
 
-1. `WebSecurityConfigurerAdapter` is deprecated in newer Spring Security
-   versions.
+1. The JWT secret is a learning-project value in `application.yml`.
 
-This project uses the older Spring Security configuration style. A newer project
-would usually define a `SecurityFilterChain` bean.
+The Google client secret can be read from local file config. The JWT secret is
+still a learning-project value:
 
-2. The JWT secret is hardcoded in `application.properties`.
-
-```properties
-jwt.secret=javainuse
+```yaml
+jwt:
+  secret: javainuse
 ```
 
 Production systems should load secrets from environment variables, Vault,
 Kubernetes secrets, or another secure secret manager.
 
-3. `jjwt:0.9.1` is old.
+2. `jjwt:0.9.1` is old.
 
 Newer JJWT versions split API, implementation, and JSON serializer dependencies.
 
@@ -2279,20 +2287,413 @@ curl --location 'http://localhost:8080/refreshtoken' \
 
 ## Important Configuration Values
 
-From `application.properties`:
+From `application.yml`:
 
-```properties
-jwt.secret=javainuse
-jwt.expirationDateInMs=800000
-jwt.refreshExpirationDateInMs=9000000
-spring.datasource.url=jdbc:postgresql://localhost:5432/SpringSecurity
-spring.jpa.properties.hibernate.default_schema=role_base_auth
-spring.datasource.username=postgres
-spring.datasource.password=postgres
-spring.jpa.hibernate.ddl-auto=update
+```yaml
+jwt:
+  secret: javainuse
+  expirationDateInMs: 800000
+  refreshExpirationDateInMs: 9000000
+
+google:
+  client-id: google-client-id-not-configured
+  client-secret: google-client-secret-not-configured
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/SpringSecurity
+    username: postgres
+    password: postgres
+  jpa:
+    hibernate:
+      ddl-auto: update
 ```
 
 Token expiration values are milliseconds:
 
 - Access token: `800000` ms, about 13 minutes and 20 seconds
 - Refresh token: `9000000` ms, about 2 hours and 30 minutes
+
+## Google Login With OAuth 2.0 and OIDC
+
+This project now supports two login methods that converge into the same
+application security model.
+
+### Local Login
+
+```text
+Username + Password
+        |
+        v
+AuthenticationController.createAuthenticationToken()
+        |
+        v
+AuthenticationManager
+        |
+        v
+DaoAuthenticationProvider
+        |
+        v
+CustomUserDetailsService
+        |
+        v
+Authenticated UserDetails
+        |
+        v
+JwtTokenUtil.generateToken()
+        |
+        v
+Application JWT
+        |
+        v
+Client
+```
+
+### Google Login
+
+```text
+Browser
+   |
+   v
+Spring Security OAuth2 Client
+   |
+   v
+Google Authorization Server / OpenID Provider
+   |
+   | authentication + consent
+   v
+OIDC response
+   |
+   v
+Spring Security
+   |
+   v
+OidcUser
+   |
+   v
+GoogleOAuth2AuthenticationSuccessHandler
+   |
+   v
+GoogleOidcUserService.findOrCreateUser()
+   |
+   v
+Local UserEntity with ROLE_USER
+   |
+   v
+CustomUserDetailsService
+   |
+   v
+JwtTokenUtil.generateToken()
+   |
+   v
+Application JWT
+   |
+   v
+Browser JSON response
+```
+
+### After Either Login Method
+
+```text
+Application JWT
+      |
+      v
+CustomJwtAuthenticationFilter
+      |
+      v
+JwtTokenUtil validates JWT
+      |
+      v
+CustomUserDetailsService loads local user
+      |
+      v
+Authentication
+      |
+      v
+SecurityContextHolder
+      |
+      v
+authenticated() / hasRole(...)
+      |
+      v
+Controller
+```
+
+Google's token is not used to call `/api/secure/**`. Google login only proves
+who the user is. After that, `GoogleOidcUserService` finds or creates a local
+`UserEntity`, assigns `ROLE_USER` for newly created Google users, and the normal
+`JwtTokenUtil` creates this application's JWT.
+
+Google's `sub` claim is the stable provider-side user identifier. This project
+stores it as `provider_id` with `provider=GOOGLE`. The application does not
+blindly merge a username/password account with a Google account just because the
+email strings match. Safe account linking should be an explicit user-confirmed
+flow.
+
+## OAuth2 vs OIDC
+
+OAuth 2.0 is an authorization framework. It primarily answers:
+
+```text
+What is this client allowed to access?
+```
+
+OpenID Connect is an identity layer built on OAuth 2.0. It primarily answers:
+
+```text
+Who is this user?
+```
+
+For this project:
+
+```text
+Google Login
+     =
+OAuth 2.0 Authorization Code Flow
+     +
+OpenID Connect
+     +
+ID Token / UserInfo
+     =
+Verified Google identity
+
+Verified Google identity
+     -> Local application user
+     -> Application role
+     -> My application's JWT
+```
+
+## Token Comparison
+
+| Token | Issuer | Consumer | Used for |
+| --- | --- | --- | --- |
+| Google Authorization Code | Google | Spring Security OAuth2 Client in this application | Short-lived browser callback value exchanged by the backend for Google tokens |
+| Google Access Token | Google | This application, if it wants to call Google APIs | Access to Google resources. This project does not use it for Drive, Gmail, Photos, or Calendar |
+| Google ID Token | Google | Spring Security OIDC support in this application | Verified Google identity: subject, email, name, email verification |
+| Application JWT | This Spring Boot application | This Spring Boot application's `CustomJwtAuthenticationFilter` | Calling this application's secured APIs with local roles |
+
+The application JWT is different from Google's ID token and access token. It is
+issued by this application, uses this application's `jwt.secret`, contains the
+local username as the JWT subject, and is validated by `JwtTokenUtil`.
+
+## Google Cloud Setup
+
+1. Open Google Cloud Console.
+2. Create or select a project.
+3. Configure the OAuth consent screen if Google asks for it.
+4. Create credentials.
+5. Choose OAuth Client ID.
+6. Application type: Web application.
+7. Add this authorized redirect URI:
+
+```text
+http://localhost:8080/login/oauth2/code/google
+```
+
+This is the actual redirect URI for this project because there is no
+`server.port` override and no servlet context path. Spring Boot uses port `8080`
+by default, and Spring Security's Google registration id is `google`.
+
+Provide the client values in either `application.yml`:
+
+```yaml
+google:
+  client-id: your-google-client-id
+  client-secret: your-google-client-secret
+```
+
+Or create a local `config.json` in the project root:
+
+```json
+{
+  "google": {
+    "client-id": "your-google-client-id",
+    "client-secret": "your-google-client-secret"
+  }
+}
+```
+
+`config.json` is ignored by Git. Use `config.example.json` as the template.
+When both files are present, `config.json` wins over `application.yml` for the
+Google client id and secret.
+
+Requested Google scopes:
+
+```text
+openid
+profile
+email
+```
+
+These scopes are for login and identity only.
+
+## Browser and Postman Testing
+
+### Browser
+
+1. Start the Spring Boot application.
+2. Open:
+
+```text
+http://localhost:8080/oauth2/authorization/google
+```
+
+3. The browser redirects to Google.
+4. Login to Google.
+5. Google redirects back to:
+
+```text
+http://localhost:8080/login/oauth2/code/google
+```
+
+6. Spring Security validates the OIDC response.
+7. `GoogleOAuth2AuthenticationSuccessHandler` receives the `OidcUser`.
+8. `GoogleOidcUserService` finds or creates the local user.
+9. A new Google user receives only `ROLE_USER`.
+10. `JwtTokenUtil` generates this application's JWT.
+11. The browser displays a JSON response containing:
+
+```json
+{
+  "tokenType": "Bearer",
+  "token": "<application-jwt>"
+}
+```
+
+This JSON token response is for DEVELOPMENT / LEARNING ONLY. It avoids putting
+the JWT in a URL query parameter, but production applications should normally
+use a secure HTTP-only cookie or a safer frontend/backend exchange mechanism.
+
+### Postman
+
+Import this collection into Postman:
+
+```text
+Spring-Security-Google-OIDC.postman_collection.json
+```
+
+The collection contains three folders:
+
+- `Local Username Password Login`
+- `Google OIDC Login`
+- `Secured API With Application JWT`
+
+Google login still starts in the browser. Postman does not complete this
+project's Spring Security `oauth2Login` flow by itself because the flow uses
+browser redirects, Google login UI, and a temporary server-side session.
+
+Use the collection like this:
+
+1. Run the Spring Boot application.
+2. In Postman, confirm `baseUrl` is:
+
+```text
+http://localhost:8080
+```
+
+3. Open this URL in the browser:
+
+```text
+http://localhost:8080/oauth2/authorization/google
+```
+
+4. Complete Google login in the browser.
+5. Copy the `token` value from the browser JSON response.
+6. In Postman, set the collection variable:
+
+```text
+applicationJwt=<token copied from browser>
+```
+
+Alternatively, open the request:
+
+```text
+Google OIDC Login / 2. Paste Browser Application JWT Here
+```
+
+Paste the token into `tokenFromBrowser` in that request's Pre-request Script,
+then send the request once. The script saves it into the `applicationJwt`
+collection variable.
+
+Then call the existing secured endpoint:
+
+```http
+GET http://localhost:8080/api/secure/info
+Authorization: Bearer <application-jwt>
+```
+
+Expected result:
+
+```text
+HTTP 200
+```
+
+In the collection, this request is:
+
+```text
+Secured API With Application JWT / Authenticated Endpoint - /api/secure/info
+```
+
+Role behavior:
+
+```text
+LOCAL USER with ROLE_USER
+    -> application JWT
+    -> GET /api/secure/info
+    -> 200
+
+LOCAL ADMIN with ROLE_ADMIN
+    -> application JWT
+    -> GET /api/secure/info
+    -> 200
+
+GOOGLE USER
+    -> Google OIDC login
+    -> local ROLE_USER
+    -> application JWT
+    -> GET /api/secure/info
+    -> 200
+
+GOOGLE USER
+    -> application JWT
+    -> GET /admin-user
+    -> 403 Forbidden
+```
+
+## IntelliJ Debugging Guide
+
+Google login breakpoints:
+
+| Class | Method | Inspect |
+| --- | --- | --- |
+| `OAuth2AuthorizationRequestRedirectFilter` | `doFilterInternal` | Browser request to `/oauth2/authorization/google` and redirect to Google |
+| `OAuth2LoginAuthenticationFilter` | `attemptAuthentication` | Callback request to `/login/oauth2/code/google` |
+| `OidcAuthorizationCodeAuthenticationProvider` | `authenticate` | Authorization code exchange and OIDC validation |
+| `GoogleOAuth2AuthenticationSuccessHandler` | `onAuthenticationSuccess` | `OidcUser`, `sub`, email, name, `email_verified` |
+| `GoogleOidcUserService` | `findOrCreateUser` | Lookup by `provider=GOOGLE` and Google `sub` |
+| `GoogleOidcUserService` | `findOrCreateUser` | New user role list contains `ROLE_USER`, not `ROLE_ADMIN` |
+| `JwtTokenUtil` | `generateToken` | Local username used as this application's JWT subject |
+
+Application JWT request breakpoints:
+
+| Class | Method | Inspect |
+| --- | --- | --- |
+| `CustomJwtAuthenticationFilter` | `doFilterInternal` | `Authorization: Bearer <application-jwt>` header |
+| `JwtTokenUtil` | `getUsernameFromToken` | Local username extracted from JWT subject |
+| `CustomUserDetailsService` | `loadUserByUsername` | Local user and authorities |
+| `JwtTokenUtil` | `validateToken` | JWT signature, subject, and expiration |
+| `CustomJwtAuthenticationFilter` | `doFilterInternal` | `SecurityContextHolder.getContext().setAuthentication(...)` |
+| `AuthenticatedUserController` | `getSecureInfo` | Authenticated principal for `/api/secure/info` |
+
+## Implementation Notes
+
+- `spring-boot-starter-oauth2-client` was added using the existing Spring Boot
+  dependency management.
+- The project remains on Spring Boot `2.5.0`, so the configuration uses a
+  component-style `SecurityFilterChain` compatible with this version instead of
+  `WebSecurityConfigurerAdapter`.
+- OAuth login needs a temporary session during the Google redirect flow, so
+  `SecurityConfiguration` uses `SessionCreationPolicy.IF_REQUIRED`. Secured API
+  calls still authenticate through the existing Bearer JWT filter.
+- No duplicate JWT service, JWT filter, `UserDetailsService`, password encoder,
+  security filter chain, or user model was added.
